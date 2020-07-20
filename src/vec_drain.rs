@@ -1,8 +1,9 @@
 use core::ops::{Bound, RangeBounds};
 use core::ptr;
+use core::mem;
 
 pub struct VecDrain<'a, T: 'a> {
-    slice: &'a [T],
+    slice: &'a mut [T],
 }
 
 impl<'a, T: 'a> VecDrain<'a, T> {
@@ -12,7 +13,7 @@ impl<'a, T: 'a> VecDrain<'a, T> {
             Bound::Included(&n) => n,
             Bound::Excluded(&n) => n+1,
         };
-        let end = match range.start_bound() {
+        let end = match range.end_bound() {
             Bound::Unbounded => vec.len(),
             Bound::Included(&n) => n+1,
             Bound::Excluded(&n) => n,
@@ -27,16 +28,16 @@ impl<'a, T: 'a> VecDrain<'a, T> {
         to_rotate.rotate_left(len);
 
         let oldlen = vec.len();
+        let newlen = oldlen - len;
 
         /* SAFETY (set_len): we want to shorten the vec, because later in iteration
          * we will be ptr::read()ing it, effectively duplicating elements without
          * clone(). This can cause double-free when panicing.
-         * We have checked that len <= oldlen.
          * SAFETY (get_unchecked): we just grab the slice that we shortened
          */
         let slice = unsafe { 
-            vec.set_len(oldlen - len); 
-            vec.get_unchecked(vec.len() .. oldlen)
+            vec.set_len(newlen); 
+            vec.get_unchecked_mut(newlen .. oldlen)
         };
 
         Self { slice }
@@ -45,21 +46,22 @@ impl<'a, T: 'a> VecDrain<'a, T> {
 
 impl<'a, T: 'a> Drop for VecDrain<'a, T> {
     fn drop(&mut self) {
-        for itemref in self.slice.iter() {
-            let ptr = itemref as *const T as *mut T;
-            /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
-            unsafe { ptr::drop_in_place(ptr) }
-        }
+        /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
+        unsafe { ptr::drop_in_place(self.slice) }
     }
 }
 
 impl<'a, T: 'a> Iterator for VecDrain<'a, T> {
     type Item = T;
+
     fn next(&mut self) -> Option<Self::Item> {
-        let (first, rest) = self.slice.split_first()?;
+        let slice = mem::replace(&mut self.slice, &mut []);
+        let (first, rest) = slice.split_first_mut()?;
         self.slice = rest;
-        /* SAFETY: Vec won't drop the element and we only pass it once */
-        let item = unsafe { ptr::read(first as *const T) };
+
+        /* SAFETY: Vec won't drop the element and we are only passing it once */
+        let item = unsafe { ptr::read(first) };
+
         Some(item)
     }
 
@@ -70,44 +72,44 @@ impl<'a, T: 'a> Iterator for VecDrain<'a, T> {
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         let n = core::cmp::min(n, self.slice.len());
-        let (to_drop, rest) = self.slice.split_at(n);
+
+        let slice = mem::replace(&mut self.slice, &mut []);
+        let (to_drop, rest) = slice.split_at_mut(n);
         self.slice = rest;
 
-        for itemref in to_drop.iter() {
-            let ptr = itemref as *const T as *mut T;
-            /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
-            unsafe { ptr::drop_in_place(ptr) }
-        }
+        /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
+        unsafe { ptr::drop_in_place(to_drop) };
 
         return self.next();
+    }
+
+    fn last(mut self) -> Option<Self::Item> {
+        self.next_back()
     }
 }
 
 impl<'a, T: 'a> DoubleEndedIterator for VecDrain<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let (last, rest) = self.slice.split_last()?;
+        let slice = mem::replace(&mut self.slice, &mut []);
+        let (last, rest) = slice.split_last_mut()?;
         self.slice = rest;
+
         /* SAFETY: Vec won't drop the element and we only pass it once */
-        let item = unsafe { ptr::read(last as *const T) };
+        let item = unsafe { ptr::read(last) };
+
         Some(item)
     }
 
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         let len = self.slice.len();
-        if n >= len {
-            self.slice = &[];
-            return None;
-        }
+        let n = len - core::cmp::min(n, len);
 
-        let n = len - n;
-        let (rest, to_drop) = self.slice.split_at(n);
+        let slice = mem::replace(&mut self.slice, &mut []);
+        let (rest, to_drop) = slice.split_at_mut(n);
         self.slice = rest;
 
-        for itemref in to_drop.iter() {
-            let ptr = itemref as *const T as *mut T;
-            /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
-            unsafe { ptr::drop_in_place(ptr) }
-        }
+        /* SAFETY: Vec won't drop again this element (see VecDrain::new) */
+        unsafe { ptr::drop_in_place(to_drop) };
 
         return self.next_back();
     }

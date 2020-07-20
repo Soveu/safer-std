@@ -1,5 +1,5 @@
 [package]
-name = "safer-std"
+name = "safer_std"
 version = "0.1.0"
 authors = ["Soveu <marx.tomasz@gmail.com>"]
 edition = "2018"
